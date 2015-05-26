@@ -45,6 +45,7 @@ public class PersistentResourceXMLDescription {
     protected final boolean useValueAsElementName;
     protected final boolean noAddOperation;
     protected final AdditionalOperationsGenerator additionalOperationsGenerator;
+    protected final SpecialPersister specialPersister;
     private boolean flushRequired = true;
     private boolean childAlreadyRead = false;
     private final Map<String, AttributeParser> attributeParsers;
@@ -71,6 +72,7 @@ public class PersistentResourceXMLDescription {
         this.useValueAsElementName = useValueAsElementName;
         this.noAddOperation = noAddOperation;
         this.additionalOperationsGenerator = additionalOperationsGenerator;
+        this.specialPersister = null;
         this.attributeParsers = attributeParsers;
         this.namespaceURI = null;
         this.attributeGroups = null;
@@ -106,7 +108,7 @@ public class PersistentResourceXMLDescription {
                 }
             }
         } else {
-            LinkedHashMap<String,AttributeDefinition> attrs = new LinkedHashMap<>();
+            LinkedHashMap<String, AttributeDefinition> attrs = new LinkedHashMap<>();
             for (AttributeDefinition ad : builder.attributeList) {
                 if (ad instanceof PropertiesAttributeDefinition) {
                     addProperty((PropertiesAttributeDefinition) ad);
@@ -125,6 +127,7 @@ public class PersistentResourceXMLDescription {
         this.useValueAsElementName = builder.useValueAsElementName;
         this.noAddOperation = builder.noAddOperation;
         this.additionalOperationsGenerator = builder.additionalOperationsGenerator;
+        this.specialPersister = builder.specialPersister;
         this.attributeParsers = builder.attributeParsers;
         this.attributeMarshallers = builder.attributeMarshallers;
         this.forcedName = builder.forcedName;
@@ -174,7 +177,7 @@ public class PersistentResourceXMLDescription {
                 if (attributeGroups.contains(reader.getLocalName())) {
                     parseAttributes(reader, op, attributesByGroup.get(reader.getLocalName()), wildcard);
                     ParseUtils.requireNoContent(reader);
-                } else if(propertyAttributes.containsKey(reader.getLocalName())) {
+                } else if (propertyAttributes.containsKey(reader.getLocalName())) {
                     parseProperty(reader, op);
                 } else {
                     //don't break, as we read all attributes, we set that child was already read so readChildren wont do .nextTag()
@@ -254,7 +257,9 @@ public class PersistentResourceXMLDescription {
                     if (child != null) {
                         if (child.xmlWrapperElement != null) {
                             if (reader.getLocalName().equals(child.xmlWrapperElement)) {
-                                if (reader.hasNext() && reader.nextTag() == END_ELEMENT) { return; }
+                                if (reader.hasNext() && reader.nextTag() == END_ELEMENT) {
+                                    return;
+                                }
                             } else {
                                 throw ParseUtils.unexpectedElement(reader);
                             }
@@ -316,12 +321,31 @@ public class PersistentResourceXMLDescription {
         }
 
         boolean writeWrapper = xmlWrapperElement != null;
-        if (writeWrapper) {
-            writeStartElement(writer, namespaceURI, xmlWrapperElement);
-        }
+               if (writeWrapper) {
+                   boolean atLeastOnePersistRequired = false;
+
+                   if (wildcard) {
+                       for (Property p : model.asPropertyList()) {
+                           atLeastOnePersistRequired = this.specialPersister == null || this.specialPersister.isPersistRequired(p.getName(), p.getValue(), namespaceURI);
+                           if (atLeastOnePersistRequired)
+                               break;
+                       }
+                   } else {
+                       atLeastOnePersistRequired = this.specialPersister == null || this.specialPersister.isPersistRequired(null, model, namespaceURI);
+                   }
+
+                   writeWrapper = writeWrapper && atLeastOnePersistRequired;
+                   if (writeWrapper) {
+                       writeStartElement(writer, namespaceURI, xmlWrapperElement);
+                   }
+               }
 
         if (wildcard) {
             for (Property p : model.asPropertyList()) {
+                boolean persistRequired = this.specialPersister == null || this.specialPersister.isPersistRequired(p.getName(), p.getValue(), namespaceURI);
+                if (!persistRequired) {
+                    continue;
+                }
                 if (useValueAsElementName) {
                     writeStartElement(writer, namespaceURI, p.getName());
                 } else {
@@ -334,20 +358,24 @@ public class PersistentResourceXMLDescription {
             }
         } else {
             final boolean empty = attributeGroups.isEmpty() && propertyAttributes.isEmpty() && children.isEmpty();
-            if (useValueAsElementName) {
-                writeStartElement(writer, namespaceURI, resourceDefinition.getPathElement().getValue());
-            } else if (isSubsystem) {
-                startSubsystemElement(writer, namespaceURI, empty);
-            } else {
-                writeStartElement(writer, namespaceURI, xmlElementName);
-            }
+            boolean persistRequired = this.specialPersister == null || this.specialPersister.isPersistRequired(null, model, namespaceURI);
+            if (persistRequired) {
 
-            persistAttributes(writer, model, true);
-            persistChildren(writer, model);
+                if (useValueAsElementName) {
+                    writeStartElement(writer, namespaceURI, resourceDefinition.getPathElement().getValue());
+                } else if (isSubsystem) {
+                    startSubsystemElement(writer, namespaceURI, empty);
+                } else {
+                    writeStartElement(writer, namespaceURI, xmlElementName);
+                }
 
-            // Do not attempt to write end element if the <subsystem/> has no elements!
-            if (!isSubsystem || !empty) {
-                writer.writeEndElement();
+                persistAttributes(writer, model, true);
+                persistChildren(writer, model);
+
+                // Do not attempt to write end element if the <subsystem/> has no elements!
+                if (!isSubsystem || !empty) {
+                    writer.writeEndElement();
+                }
             }
         }
 
@@ -409,6 +437,7 @@ public class PersistentResourceXMLDescription {
         protected boolean useValueAsElementName;
         protected boolean noAddOperation;
         protected AdditionalOperationsGenerator additionalOperationsGenerator;
+        protected SpecialPersister specialPersister;
         @Deprecated
         protected final LinkedHashMap<String, AttributeDefinition> attributes = new LinkedHashMap<>();
         protected final LinkedList<AttributeDefinition> attributeList = new LinkedList<>();
@@ -489,6 +518,11 @@ public class PersistentResourceXMLDescription {
             return this;
         }
 
+        public PersistentResourceXMLBuilder setSpecialPersister(final SpecialPersister specialPersister) {
+            this.specialPersister = specialPersister;
+            return this;
+        }
+
         /**
          * This method permit to set a forced name for resource created by parser.
          * This is useful when xml tag haven't an attribute defining the name for the resource,
@@ -536,6 +570,25 @@ public class PersistentResourceXMLDescription {
          * @param operations   The operation list
          */
         void additionalOperations(final PathAddress address, final ModelNode addOperation, final List<ModelNode> operations);
+
+    }
+
+    /**
+     * Some resource require special persist operation. This abstract class provide a hook fore these to be pligged in
+     */
+    public interface SpecialPersister {
+
+
+        /**
+         * It defines if persist operation is required or not for this resource model
+         * Default implementation return true.
+         *
+         * @param name         Resource name
+         * @param model        Resource's model
+         * @param namespaceURI namespace of persisted xml
+         * @return true if persist operation should be executed. False if it should be avoided at all
+         */
+        boolean isPersistRequired(String name, ModelNode model, String namespaceURI);
 
     }
 }

@@ -53,7 +53,8 @@ public class PersistentResourceXMLDescription {
     private final boolean useElementsForGroups;
     private final String namespaceURI;
     private final Set<String> attributeGroups;
-    private final String forcedName;
+    private String forcedName;
+    private final boolean inheritName;
 
     /**
      * @deprecated use a {@link org.jboss.as.controller.PersistentResourceXMLDescription.PersistentResourceXMLBuilder builder}
@@ -78,6 +79,7 @@ public class PersistentResourceXMLDescription {
         this.attributeGroups = null;
         this.attributeMarshallers = null;
         this.forcedName = null;
+        this.inheritName = false;
     }
 
     private PersistentResourceXMLDescription(PersistentResourceXMLBuilder builder) {
@@ -131,6 +133,7 @@ public class PersistentResourceXMLDescription {
         this.attributeParsers = builder.attributeParsers;
         this.attributeMarshallers = builder.attributeMarshallers;
         this.forcedName = builder.forcedName;
+        this.inheritName = builder.inheritName;
     }
 
     private void addProperty(final PropertiesAttributeDefinition ad) {
@@ -166,7 +169,7 @@ public class PersistentResourceXMLDescription {
             additionalOperationsGenerator.additionalOperations(address, op, list);
         }
         if (!reader.isEndElement()) { //only parse children if we are not on end of tag already
-            parseChildren(reader, address, list);
+            parseChildren(reader, address, list, name);
         }
     }
 
@@ -241,7 +244,7 @@ public class PersistentResourceXMLDescription {
         return res;
     }
 
-    private void parseChildren(final XMLExtendedStreamReader reader, PathAddress parentAddress, List<ModelNode> list) throws XMLStreamException {
+    private void parseChildren(final XMLExtendedStreamReader reader, PathAddress parentAddress, List<ModelNode> list, String parentName) throws XMLStreamException {
         if (children.size() == 0) {
             if (flushRequired && attributeGroups.isEmpty()) {
                 ParseUtils.requireNoContent(reader);
@@ -255,6 +258,9 @@ public class PersistentResourceXMLDescription {
                 do {
                     PersistentResourceXMLDescription child = children.get(reader.getLocalName());
                     if (child != null) {
+                        if (child.inheritName && child.forcedName == null) {
+                            child.forcedName = parentName;
+                        }
                         if (child.xmlWrapperElement != null) {
                             if (reader.getLocalName().equals(child.xmlWrapperElement)) {
                                 if (reader.hasNext() && reader.nextTag() == END_ELEMENT) {
@@ -446,6 +452,7 @@ public class PersistentResourceXMLDescription {
         protected final LinkedHashMap<String, AttributeMarshaller> attributeMarshallers = new LinkedHashMap<>();
         protected boolean useElementsForGroups = true;
         protected String forcedName;
+        protected boolean inheritName;
 
         protected PersistentResourceXMLBuilder(final PersistentResourceDefinition resourceDefinition) {
             this.resourceDefinition = resourceDefinition;
@@ -534,6 +541,18 @@ public class PersistentResourceXMLDescription {
          */
         public PersistentResourceXMLBuilder setForcedName(String forcedName) {
             this.forcedName = forcedName;
+            return this;
+        }
+
+        /**
+         * This method permit to set a forced name for resource inheriting it from parent resource
+         * This is useful when xml tag haven't an attribute defining the name for the resource and parent tag define the name
+         * In some cases having a resource with same name of the parent is very usefull defining service dependencies
+         * @param inheritName  true if the name should be the same of parent resource. False otherwise.
+         * @return the PersistentResourceXMLBuilder itself
+         */
+        public PersistentResourceXMLBuilder setInheritName(boolean inheritName) {
+            this.inheritName = inheritName;
             return this;
         }
 
